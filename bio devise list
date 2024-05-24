@@ -1,0 +1,132 @@
+import requests
+import frappe
+from frappe.model.document import Document
+
+import requests
+import xmltodict
+import frappe
+from datetime import datetime
+import time
+from datetime import timedelta
+
+
+class BioDevice(Document):
+   
+	def employee_data(self):
+		employee_data()
+
+		
+
+
+
+
+@frappe.whitelist()
+def employee_data():
+    data=frappe.db.sql(''' SELECT name from `tabBio Device` ''',as_dict=True)
+    for i in data:
+        BioDevice = frappe.get_doc('Bio Device',i.get('name'))
+        serial_number = BioDevice.serial_number
+        user_name = BioDevice.user_name
+        user_password = BioDevice.get_password('user_password')
+        url = BioDevice.url
+        sync_time = BioDevice.sync_time
+        total_min = int(sync_time) * 60
+
+        tomorrow_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+
+
+        time.sleep(total_min)
+        if BioDevice.active:
+        
+            api_url = f"{url}"
+            
+            xml_body = f"""
+            <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tem="http://tempuri.org/">
+                <soapenv:Header/>
+                <soapenv:Body>
+                    <tem:GetTransactionsLog>
+                        <tem:FromDateTime>01-04-2024</tem:FromDateTime>
+                        <tem:ToDateTime>{tomorrow_date}</tem:ToDateTime>
+                        <tem:SerialNumber>{serial_number}</tem:SerialNumber>
+                        <tem:UserName>{user_name}</tem:UserName>
+                        <tem:UserPassword>{user_password}</tem:UserPassword>
+                        <tem:strDataList>string</tem:strDataList>
+                    </tem:GetTransactionsLog>
+                </soapenv:Body>
+            </soapenv:Envelope>
+            """
+
+            headers = {
+                'Content-Type': 'text/xml',
+                'Accept': 'text/xml'
+            }
+
+            try:
+                response = requests.post(api_url, headers=headers, data=xml_body)
+
+                if response.status_code == 200:
+                    # Extract dates from strDataList
+                    xml_data = xmltodict.parse(response.content)
+
+                    # Extract dates from strDataList
+                    str_data_list = xml_data["soap:Envelope"]["soap:Body"]["GetTransactionsLogResponse"]["strDataList"]
+
+                    # Split the strDataList and extract dates
+                    date_time_pairs = {}
+                    for row in str_data_list.split("\n"):
+                        row_data = row.split("\t")
+                        if len(row_data) >= 2:
+                            id = int(row_data[0])
+                            date = row_data[1]
+                            if id not in date_time_pairs:
+                                date_time_pairs[id] = []
+                            date_time_pairs[id].append({"date": date, "log_type": "IN"})
+                        # print(row_data)
+
+                    reorganized_data = {}
+                    for code, logs in date_time_pairs.items():
+                        for log in logs:
+                            date = log['date'].split()[0]  # Extracting date part
+                            if code not in reorganized_data:
+                                reorganized_data[code] = {date: [log]}
+                            else:
+                                if date not in reorganized_data[code]:
+                                    reorganized_data[code][date] = [log]
+                                else:
+                                    reorganized_data[code][date].append(log)
+                        
+                        for date, logs in reorganized_data[code].items():
+                            # reorganized_data[code][date] = sorted(logs, key=lambda x: x['date'])
+                            sorted_logs = sorted(logs, key=lambda x: x['date'])
+                            # Update log_type
+                            log_types = ['IN', 'OUT', 'IN', 'OUT']  # Define log types sequence
+                            for i, log in enumerate(sorted_logs):
+                                log['log_type'] = log_types[i % len(log_types)]
+                            reorganized_data[code][date] = sorted_logs
+                    
+                    for d, val in reorganized_data.items():
+                        for k, v in val.items():
+                            for data in v:
+                                print(data, d, '-----')
+                                employee_code = d
+                                employee = frappe.db.get_value("Employee", {"custom_emp_code": d}, ["name", "attendance_device_id"], as_dict=1)
+
+                                if employee:
+                                    if frappe.db.exists("Employee Checkin", {'time': data.get('date')}):
+                                        pass
+                                    else:
+                                        new_doc = frappe.new_doc("Employee Checkin")
+                                        new_doc.employee = employee.get('name')
+                                        new_doc.log_type = data.get('log_type')
+                                        new_doc.time = data.get('date')
+                                        new_doc.custom_emp_code = employee_code
+                                        new_doc.device_id = employee.get('attendance_device_id')
+                                        new_doc.save(ignore_permissions=True)
+                                else:
+                                    print(f"Employee with custom_emp_code '{employee_code}' not found. Skipping insertion.")
+            except Exception as e:
+                print("Error:", str(e))
+
+
+
+
